@@ -1,15 +1,21 @@
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import pandas as pd
+from src.interaction_logger import log_interaction
+from src.session_recommender import recommend_from_session
+from src.collaborative_recommender import (
+    customers_also_viewed,
+    customers_also_bought
+)
+
+TOP_K = 5
 
 
-# ==============================
 # LOAD DATA
-# ==============================
-
 def load_data():
 
-    products = pd.read_parquet(
-        "data/processed/products_clean.parquet"
-    )
+    products = pd.read_parquet("data/processed/products_clean.parquet")
 
     rec = pd.read_parquet(
         "data/feature_store/recommendations.parquet"
@@ -19,16 +25,20 @@ def load_data():
         "data/feature_store/item_similarity.parquet"
     )
 
-    # fallback popularity nếu chưa có
+    features = pd.read_parquet(
+        "data/feature_store/product_features.parquet"
+    )
+
+    if "product_id" in features.columns:
+        features = features.set_index("product_id")
+
     if "popularity" not in products.columns:
         products["popularity"] = products.index[::-1]
 
-    return products, rec, sim
+    return products, rec, sim, features
 
 
-# ==============================
 # FORMAT PRICE
-# ==============================
 
 def format_price(v):
 
@@ -38,9 +48,7 @@ def format_price(v):
         return "N/A"
 
 
-# ==============================
-# PRINT PRODUCT TABLE
-# ==============================
+# PRINT TABLE
 
 def print_products(df):
 
@@ -65,25 +73,42 @@ def print_products(df):
 
     print("------------------------------------------------------------------------------------------------")
 
+# GET PRODUCTS
 
-# ==============================
+def get_products(products, product_ids, current_pid=None):
+
+    rows = []
+
+    for pid in product_ids:
+
+        if current_pid and pid == current_pid:
+            continue
+
+        prod = products[products["product_id"] == pid]
+
+        if not prod.empty:
+            rows.append(prod.iloc[0])
+
+        if len(rows) >= TOP_K:
+            break
+
+    return pd.DataFrame(rows)
+
 # PRODUCT DETAIL
-# ==============================
 
 def show_product_detail(products, pid):
 
     p = products[products["product_id"] == pid]
 
     if p.empty:
-
         print("\n❌ Product not found")
         return False
 
     p = p.iloc[0]
 
-    print("\n===================================================")
+    print("\n=====================")
     print("📦 PRODUCT DETAIL")
-    print("===================================================")
+    print("=====================")
 
     print("ID       :", p["product_id"])
     print("Name     :", p.get("product_name", "-"))
@@ -96,9 +121,7 @@ def show_product_detail(products, pid):
     return True
 
 
-# ==============================
 # RELATED PRODUCTS
-# ==============================
 
 def show_related(similarity, products, pid):
 
@@ -106,72 +129,106 @@ def show_related(similarity, products, pid):
 
     sim = similarity[
         similarity["product_id"] == pid
-    ].sort_values("rank").head(5)
+    ].sort_values("rank")
 
-    rows = []
+    product_ids = sim["similar_product_id"].tolist()
 
-    for _, r in sim.iterrows():
+    df = get_products(products, product_ids, pid)
 
-        spid = r["similar_product_id"]
-
-        prod = products[
-            products["product_id"] == spid
-        ]
-
-        if not prod.empty:
-            rows.append(prod.iloc[0])
-
-    if rows:
-
-        df = pd.DataFrame(rows)
+    if not df.empty:
         print_products(df)
 
-    else:
 
-        print("No related products")
+# ALSO VIEWED
+
+def show_also_viewed(products, pid):
+
+    rec = customers_also_viewed(pid)
+
+    if rec is None:
+        return
+
+    print("\n👥 CUSTOMERS ALSO VIEWED")
+
+    product_ids = rec.index.tolist()
+
+    df = get_products(products, product_ids, pid)
+
+    if not df.empty:
+        print_products(df)
 
 
-# ==============================
-# USER RECOMMENDATIONS
-# ==============================
+# ALSO BOUGHT
 
-def show_user_rec(rec, products, user_id):
+def show_also_bought(products, pid):
+
+    rec = customers_also_bought(pid)
+
+    if rec is None:
+        return
+
+    print("\n🛒 CUSTOMERS ALSO BOUGHT")
+
+    product_ids = rec.index.tolist()
+
+    df = get_products(products, product_ids, pid)
+
+    if not df.empty:
+        print_products(df)
+
+
+# SESSION REC
+
+def show_session_rec(user_id, features, products, pid):
+
+    rec = recommend_from_session(user_id, features)
+
+    if rec is None:
+        return
+
+    print("\n⚡ SESSION-BASED RECOMMENDATIONS")
+
+    product_ids = rec.index.tolist()
+
+    df = get_products(products, product_ids, pid)
+
+    if not df.empty:
+        print_products(df)
+
+
+# USER REC
+
+def show_user_rec(rec, products, user_id, pid):
 
     print("\n⭐ RECOMMENDED FOR YOU")
 
     r = rec[
         rec["user_id"] == user_id
-    ].sort_values(
-        "final_score",
-        ascending=False
-    ).head(10)
+    ].sort_values("final_score", ascending=False)
 
-    rows = []
+    product_ids = r["product_id"].tolist()
 
-    for _, row in r.iterrows():
+    df = get_products(products, product_ids, pid)
 
-        pid = row["product_id"]
-
-        prod = products[
-            products["product_id"] == pid
-        ]
-
-        if not prod.empty:
-            rows.append(prod.iloc[0])
-
-    if rows:
-
-        df = pd.DataFrame(rows)
+    if not df.empty:
         print_products(df)
 
-    else:
 
-        print("No recommendation")
+# POPULAR PRODUCTS
+
+def show_popular(products):
+
+    print("\n🔥 POPULAR PRODUCTS")
+
+    df = products.sort_values(
+        "popularity",
+        ascending=False
+    ).head(TOP_K)
+
+    print_products(df)
 
 
-# ==============================
-# HOMEPAGE PAGINATION
-# ==============================
+# HOMEPAGE
 
 def browse_homepage(products):
 
@@ -227,11 +284,9 @@ def browse_homepage(products):
             return None
 
 
-# ==============================
 # PRODUCT LOOP
-# ==============================
 
-def product_loop(products, rec, sim, user_id, pid):
+def product_loop(products, rec, sim, features, user_id, pid):
 
     while True:
 
@@ -240,14 +295,35 @@ def product_loop(products, rec, sim, user_id, pid):
         if not ok:
             return
 
+        log_interaction(user_id, pid, "view")
+
         show_related(sim, products, pid)
 
-        show_user_rec(rec, products, user_id)
+        show_also_viewed(products, pid)
+
+        show_also_bought(products, pid)
+
+        show_session_rec(
+            user_id,
+            features,
+            products,
+            pid
+        )
+
+        show_user_rec(
+            rec,
+            products,
+            user_id,
+            pid
+        )
+
+        show_popular(products)
 
         print("\nOptions:")
         print("1 → View another product")
         print("2 → Back to homepage")
-        print("3 → Exit")
+        print("3 → Purchase product")
+        print("4 → Exit")
 
         choice = input("Select option: ")
 
@@ -260,22 +336,23 @@ def product_loop(products, rec, sim, user_id, pid):
                 print("Invalid id")
 
         elif choice == "2":
-
             return
 
         elif choice == "3":
+
+            log_interaction(user_id, pid, "purchase")
+            print("\n🛒 Purchase recorded")
+
+        elif choice == "4":
 
             print("\nExit demo")
             exit()
 
 
-# ==============================
 # MAIN
-# ==============================
-
 def main():
 
-    products, rec, sim = load_data()
+    products, rec, sim, features = load_data()
 
     print("\n🔐 LOGIN")
 
@@ -292,7 +369,7 @@ def main():
         if pid is None:
 
             print("\nMenu:")
-            print("1 → Recommended for you")
+            print("1 → Show recommendations")
             print("2 → Back to homepage")
             print("3 → Exit")
 
@@ -300,20 +377,39 @@ def main():
 
             if choice == "1":
 
-                show_user_rec(rec, products, user_id)
+                show_session_rec(
+                    user_id,
+                    features,
+                    products,
+                    None
+                )
+
+                show_user_rec(
+                    rec,
+                    products,
+                    user_id,
+                    None
+                )
+
+                show_popular(products)
 
             elif choice == "2":
-
                 continue
 
             elif choice == "3":
-
                 print("\nExit demo")
                 break
 
         else:
 
-            product_loop(products, rec, sim, user_id, pid)
+            product_loop(
+                products,
+                rec,
+                sim,
+                features,
+                user_id,
+                pid
+            )
 
 
 if __name__ == "__main__":
